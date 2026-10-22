@@ -8,7 +8,7 @@ key 在 Buffer 后台 Settings → API → Personal Keys 生成，需勾选 post
 工作流程：
   1. 查 account → 取 organization id
   2. 用 organization id 查 channels → 找 X(Twitter) 渠道 id
-  3. 查该渠道 queuedPosts 数量
+  3. 用 posts 查询统计该渠道 scheduled（队列中）数量
   4. 不足 TARGET 条时，从 tweets.txt 按日期轮询，用 createPost(mode: addToQueue) 补满
 
 环境变量：
@@ -53,12 +53,15 @@ def load_tweets(path):
     return tweets
 
 
-def get_x_channel(token):
+def get_org_id(token):
     org = gql(token, "query { account { organizations { id name } } }")
     orgs = org.get("account", {}).get("organizations", [])
     if not orgs:
         raise RuntimeError("账户下没有 organization，请先在 Buffer 连接 X 账号")
-    org_id = orgs[0]["id"]
+    return orgs[0]["id"]
+
+
+def get_x_channel(token, org_id):
     q = 'query { channels(input: { organizationId: "%s" }) { id name service } }' % org_id
     d = gql(token, q)
     channels = d.get("channels", [])
@@ -67,13 +70,17 @@ def get_x_channel(token):
             return c
     if channels:
         return channels[0]
-    raise RuntimeError("Buffer 里没有连接任何渠道，请先连接 X")
+    raise RuntimeError("Buffer 里没有连接 X 渠道")
 
 
-def pending_count(token, channel_id):
-    q = 'query { channel(id: "%s") { queuedPosts { edges { node { id } } } } }' % channel_id
+def pending_count(token, org_id, channel_id):
+    q = (
+        'query { posts(first: 50, input: { organizationId: "%s", '
+        'filter: { status: [scheduled], channelIds: ["%s"] } }) { totalCount } }'
+        % (org_id, channel_id)
+    )
     d = gql(token, q)
-    return len(d.get("channel", {}).get("queuedPosts", {}).get("edges", []))
+    return d.get("posts", {}).get("totalCount", 0)
 
 
 def add_to_queue(token, channel_id, text):
@@ -107,10 +114,11 @@ def main():
     target = min(int(os.environ.get("QUEUE_TARGET", "10")), 10)
     try:
         tweets = load_tweets(TWEETS_FILE)
-        ch = get_x_channel(token)
+        org_id = get_org_id(token)
+        ch = get_x_channel(token, org_id)
         cid = ch["id"]
         print(f"渠道: {ch.get('service')} / {ch.get('name')} (id={cid})")
-        count = pending_count(token, cid)
+        count = pending_count(token, org_id, cid)
         print(f"当前队列: {count} 条，目标: {target} 条")
         need = target - count
         if need <= 0:
