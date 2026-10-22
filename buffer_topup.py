@@ -8,8 +8,9 @@ key 在 Buffer 后台 Settings → API → Personal Keys 生成，需勾选 post
 工作流程：
   1. 查 account → 取 organization id
   2. 用 organization id 查 channels → 找 X(Twitter) 渠道 id
-  3. 用 posts 查询统计该渠道 scheduled（队列中）数量
-  4. 不足 TARGET 条时，从 tweets.txt 按日期轮询，用 createPost(mode: addToQueue) 补满
+  3. 直接尝试补到 TARGET 条（createPost mode: addToQueue）
+  4. 当 Buffer 返回"队列已满"等 MutationError 时停止（不读取队列数量，
+     绕开部分 key 无 posts 读权限 / 免费版限制的问题）
 
 环境变量：
   BUFFER_ACCESS_TOKEN  Buffer Personal Key（必填）
@@ -73,14 +74,8 @@ def get_x_channel(token, org_id):
     raise RuntimeError("Buffer 里没有连接 X 渠道")
 
 
-def pending_count(token, org_id, channel_id):
-    q = (
-        'query { posts(first: 50, input: { organizationId: "%s", '
-        'filter: { status: [scheduled], channelIds: ["%s"] } }) { totalCount } }'
-        % (org_id, channel_id)
-    )
-    d = gql(token, q)
-    return d.get("posts", {}).get("totalCount", 0)
+# 注：不再读取队列数量（部分 key 无 posts 读权限 / 免费版限制），
+# 改为写入时由 Buffer 自身上限（免费版 10 条/渠道）来约束。
 
 
 def add_to_queue(token, channel_id, text):
@@ -101,9 +96,10 @@ def add_to_queue(token, channel_id, text):
     d = gql(token, q, variables)
     res = d.get("createPost", {})
     if "post" in res:
-        return True
-    print(f"  ⚠️ 加入失败: {res.get('message')}", file=sys.stderr)
-    return False
+        return True, None
+    msg = res.get("message")
+    print(f"  ⚠️ 加入失败: {msg}", file=sys.stderr)
+    return False, msg
 
 
 def main():
@@ -118,23 +114,22 @@ def main():
         ch = get_x_channel(token, org_id)
         cid = ch["id"]
         print(f"渠道: {ch.get('service')} / {ch.get('name')} (id={cid})")
-        count = pending_count(token, org_id, cid)
-        print(f"当前队列: {count} 条，目标: {target} 条")
-        need = target - count
-        if need <= 0:
-            print("✅ 队列已满，无需补充")
-            return 0
+        print(f"目标队列上限: {target} 条（尝试补满，Buffer 满则自动停止）")
         day = datetime.now().timetuple().tm_yday
         added = 0
-        for i in range(need):
-            text = tweets[(day + added) % len(tweets)]
+        for i in range(target):
+            text = tweets[(day + i) % len(tweets)]
             if len(text) > TWITTER_LIMIT:
                 print(f"  ⚠️ 跳过超长文案({len(text)}字): {text[:20]}...")
                 continue
-            if add_to_queue(token, cid, text):
+            ok, msg = add_to_queue(token, cid, text)
+            if ok:
                 added += 1
                 print(f"  + 已加入: {text}")
-        print(f"✅ 本次补充 {added} 条，队列现约 {count + added} 条")
+            else:
+                print(f"  ⚠️ 停止补充: {msg}")
+                break
+        print(f"✅ 本次补充 {added} 条")
         return 0
     except Exception as e:
         print(f"❌ 运行出错: {e}", file=sys.stderr)
