@@ -5,10 +5,16 @@
   1. 读取 Buffer 账户下的 X(Twitter) 渠道
   2. 查询当前待发队列条数
   3. 不足 TARGET 条时，从 tweets.txt 按日期轮询取文案自动加入队列
-这样配合 GitHub Actions 每天跑一次，就能长期"无人值守每天发推"，且完全免费、官方合规。
+配合 GitHub Actions 每天跑一次，即可长期"无人值守每天发推"，免费、官方合规。
+
+注意（2026 Buffer 新 API）：
+  - 接口地址为 https://api.buffer.com （旧的 api.bufferapp.com/1 已停用）
+  - 认证用请求头 Authorization: Bearer <token>，不再是 ?access_token=
+  - token 在 Buffer 后台 Settings → API → Personal Keys 生成，
+    且必须勾选 posting（发帖）权限，否则只能读不能发
 
 环境变量：
-  BUFFER_ACCESS_TOKEN  Buffer 访问令牌（必填）
+  BUFFER_ACCESS_TOKEN  Buffer Personal Key（必填）
   QUEUE_TARGET         队列补到多少条（默认 10，免费版上限）
 """
 import os
@@ -17,9 +23,13 @@ from datetime import datetime
 
 import requests
 
-API = "https://api.bufferapp.com/1"
+API = "https://api.buffer.com"
 TWEETS_FILE = os.path.join(os.path.dirname(__file__), "tweets.txt")
 TWITTER_LIMIT = 280  # X 单条字数上限
+
+
+def _headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def load_tweets(path: str) -> list[str]:
@@ -37,7 +47,7 @@ def load_tweets(path: str) -> list[str]:
 
 
 def get_profiles(token: str) -> list[dict]:
-    r = requests.get(f"{API}/profiles.json", params={"access_token": token}, timeout=30)
+    r = requests.get(f"{API}/profiles.json", headers=_headers(token), timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -54,7 +64,7 @@ def pick_x_profile(profiles: list[dict]) -> dict:
 def pending_count(token: str, profile_id: str) -> int:
     r = requests.get(
         f"{API}/profiles/{profile_id}/updates/pending.json",
-        params={"access_token": token, "count": 100},
+        headers=_headers(token),
         timeout=30,
     )
     r.raise_for_status()
@@ -64,7 +74,8 @@ def pending_count(token: str, profile_id: str) -> int:
 def add_to_queue(token: str, profile_id: str, text: str) -> bool:
     r = requests.post(
         f"{API}/updates/create.json",
-        data={"access_token": token, "profile_ids[]": profile_id, "text": text},
+        headers=_headers(token),
+        data={"profile_ids[]": profile_id, "text": text},
         timeout=30,
     )
     if r.status_code == 200:
