@@ -1,0 +1,28 @@
+name: Buffer Top-up
+
+on:
+  schedule:
+    # 每天 UTC 2:30 = 北京时间 10:30，自动检查并补满队列
+    - cron: '30 2 * * *'
+  workflow_dispatch: {}   # 允许在 Actions 页面手动触发测试
+
+jobs:
+  topup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Top up Buffer queue
+        env:
+          BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN }}
+          QUEUE_TARGET: '10'
+        run: python buffer_topup.py
